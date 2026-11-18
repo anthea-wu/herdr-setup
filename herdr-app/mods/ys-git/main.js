@@ -149,7 +149,9 @@ function stamp(time) {
 }
 
 // One file list with one open diff: the Changes tab has one, a picked commit another.
-const blank = () => ({ files: [], open: null, rows: [], diffWidth: 300, cut: false });
+const blank = () => ({ files: [], open: null, rows: [], diffWidth: 300, x: 0, cut: false });
+// Columns a line takes in the mono font: CJK and full-width glyphs are two wide.
+const columns = (text) => text.length + (text.match(/[⺀-鿿가-힯豈-﫿＀-｠]/g)?.length ?? 0);
 
 export default class Git extends View {
   init(_props, cx) {
@@ -355,7 +357,8 @@ export default class Git extends View {
     if (view.open !== path || (view !== this.wt && view !== this.picked)) return;
     view.cut = lines.length > 3000;
     view.rows = diffRows(lines.slice(0, 3000).map((line) => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line));
-    view.diffWidth = Math.max(300, ...view.rows.map((row) => (row.text.length + 1) * 7 + 50));
+    view.diffWidth = Math.max(300, ...view.rows.map((row) => (columns(row.text) + 1) * 7 + 50));
+    view.x = 0;
   }
 
   // Rows in a virtual list take no handlers of their own, so the list reports only which row.
@@ -508,17 +511,37 @@ export default class Git extends View {
   // A file list and the open file's diff, filling what is left.
   filesAndDiff(view, hash, name, t, empty) {
     const mono = settings().font_family ?? "JetBrains Mono";
+    // Sideways position is kept here rather than in a scroll area around the list: the list
+    // inside takes the wheel first, so a nested horizontal area never got the gesture.
+    const wide = Math.max(view.diffWidth, this.width), max = Math.max(0, wide - this.width);
+    const x = view.x = Math.min(Math.max(view.x ?? 0, 0), max);
+    const wheel = (e, cx) => {
+      const dx = e.delta?.x ?? 0, dy = e.delta?.y ?? 0, by = dx || (e.modifiers?.shift ? dy : 0);
+      if (!by || (dx && Math.abs(dy) > Math.abs(dx))) return;
+      cx.stop_propagation();
+      const next = Math.min(Math.max(view.x - by, 0), max);
+      if (next !== view.x) { view.x = next; cx.notify(); }
+    };
     return [
       div().flex_1().min_h(44).max_h(view.files.length * 26 + 12).relative().border_b(1).border_color(t.border)
         .child(v_flex().id(`git-files-${name}`).absolute().inset_0().overflow_y_scroll().p(6).children(view.files.map((f) => this.fileRow(view, hash, f, t)))
           .when(!view.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(empty))))
         .child(Scrollbar.vertical(`git-files-${name}`).absolute().inset_0()),
-      div().flex_1().min_h(0).relative().font_family(mono).text_size(11)
-        .child(div().id(`git-diff-x-${name}`).size_full().overflow_x_scrollbar()
-          .child(div().w_full().min_w(view.diffWidth).h_full().child(v_virtual_list(`git-diff-${name}`, view.rows.length, DIFF_ROW, (i) => String(i),
-            (range) => view.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
+      div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11)
+        .child(div().absolute().top(0).bottom(max > 0 ? 12 : 0).left(-x).w(wide).child(v_virtual_list(`git-diff-${name}`, view.rows.length, DIFF_ROW, (i) => String(i),
+          (range) => view.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full()))
+        .child(div().id(`git-diff-wheel-${name}`).absolute().inset_0().on_scroll_wheel(wheel))
         .child(Scrollbar.vertical(`git-diff-${name}`).viewport_from_layout().absolute().inset_0())
-        .when(Boolean(view.cut), (e) => e.child(div().absolute().bottom(0).right(14).px(6).bg(t.raised).text_color(t.dim).child("First 3,000 lines"))),
+        // The sideways bar: press the track to jump there, then drag (the root follows the pointer).
+        .when(max > 0 && this.width > 0, (e) => e.child(div().id(`git-diff-bar-${name}`).absolute().bottom(0).left(0).right(0).h(12).bg(t.chrome).border_t(1).border_color(t.border)
+          .on_mouse_down("left", (ev, cx) => {
+            const w = this.width, thumb = w * w / wide, at = ev?.local_position?.x;
+            if (typeof at === "number" && (at < view.x / wide * w || at > view.x / wide * w + thumb)) view.x = Math.min(Math.max((at - thumb / 2) / w * wide, 0), max);
+            this.drag = { view, from: ev.position.x, x0: view.x, scale: wide / w, max };
+            cx.stop_propagation(); cx.notify();
+          })
+          .child(div().absolute().top(2).bottom(2).left(x / wide * this.width).w(this.width / wide * this.width).bg(this.drag?.view === view ? t.muted : t.dim))))
+        .when(Boolean(view.cut), (e) => e.child(div().absolute().bottom(max > 0 ? 12 : 0).right(14).px(6).bg(t.raised).text_color(t.dim).child("First 3,000 lines"))),
     ];
   }
 
@@ -582,6 +605,13 @@ export default class Git extends View {
       .on_size_change((size, cx) => { if (Math.abs(size.width - this.width) > 1) { this.width = size.width; cx.notify(); } })
       // A click gives the panel the keyboard, so Ctrl+F reaches it: search the tree. Escape clears.
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
+      .on_mouse_move((e, cx) => {
+        const d = this.drag;
+        if (!d) return;
+        const next = Math.min(Math.max(d.x0 + (e.position.x - d.from) * d.scale, 0), d.max);
+        if (next !== d.view.x) { d.view.x = next; cx.notify(); }
+      })
+      .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = null; cx.notify(); } })
       .on_key_down((e, cx) => {
         if (e.key === "f" && e.modifiers?.control) { if (this.tab !== "tree") this.setTab("tree", cx); this.search.focus(); cx.stop_propagation(); }
         else if (e.key === "escape" && (this.typing || this.query)) { this.clearSearch(); this.handle.focus(); cx.stop_propagation(); cx.notify(); }
