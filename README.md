@@ -8,7 +8,8 @@ Herdr 桌面版（`herdr-app`）與 OpenCode 的「有隻芫荽」樣式備份�
 |---|---|
 | `herdr-app/layouts/yuansui.json` | 版面定義，會指到下面的 theme、字型與 mods |
 | `herdr-app/themes/yuansui.json` | Herdr 的配色 |
-| `herdr-app/mods/ys-*` | 八個從內建 mod 複製後改樣式的 mod，logo 圖檔在 `ys-chrome` 裡 |
+| `herdr-app/mods/ys-*` | 七個從內建 mod 複製後改樣式的 mod（logo 圖檔在 `ys-chrome` 裡），加上自己寫的 `ys-git` |
+| `herdr-app/mods/ys-git` | 視窗最右側的唯讀 Git 面板，說明見下方「Git 面板」 |
 | `herdr-app/fonts/YuansuiMono-*.ttf` | Roboto Mono 英數加上 jf open 粉圓中文的合併字型 |
 | `opencode/themes/yuansui.json` | OpenCode 的配色 |
 | `tools/merge.js` | 產生合併字型的腳本，換中文字型時才需要 |
@@ -30,15 +31,38 @@ Herdr 桌面版（`herdr-app`）與 OpenCode 的「有隻芫荽」樣式備份�
    "theme": { "name": "yuansui", "mode": "light" }
    ```
 
-5. 重開 Herdr，按 `Ctrl+Shift+L` 選 `yuansui`；已經開著的 OpenCode 要關掉重開。
+5. 在 `~/.config/herdr-app/keys.json` 的 `global` 區塊加上 Git 面板的兩個快捷鍵。`alt-9` 原本是 `space.select:9`，要換掉：
+
+   ```json
+   "alt-9": "ys-tabs.git-tree",
+   "alt-0": "ys-tabs.git-changes"
+   ```
+
+6. 重開 Herdr，按 `Ctrl+Shift+L` 選 `yuansui`；已經開著的 OpenCode 要關掉重開。
 
 不要複製 `layouts/.state/`，那是 Herdr 自己記的視窗狀態。
+
+Git 面板需要 `git` 在 PATH 上，否則只會顯示讀不到 repo。
+
+## Git 面板
+
+`ys-git` 掛在 `layouts/yuansui.json` 最外層的 `git` 節點，只跑唯讀的 git 指令，不會改動 repo。
+
+- 開關：tab bar 右邊的 Git 按鈕，或 `Alt+9`（Tree）、`Alt+0`（Changes）；面板開著又按同一個鍵會收合。快捷鍵由 `ys-tabs` 接收再轉給面板，因為收合中的 mod 收不到命令。
+- Tree：所有 branch 的 commit graph。點短 hash 複製到剪貼簿，點其他位置在下方展開該 commit 的檔案與 diff，最上面那列 uncommitted 會跳到 Changes。
+- Tree 上方的搜尋框會把清單縮到 hash、訊息第一行、作者或 branch 名稱符合的 commit，搜尋中不畫 graph 的線。點過面板後按 `Ctrl+F` 跳到搜尋框，`Esc` 清除。
+- Changes：還沒 commit 的檔案與 diff。
+- 標題列的「repo · branch」可以選一個 space 固定顯示，選 Follow focus 則跟著目前的 pane 走。這個選擇存在各台電腦自己的儲存區，不會跟著 repo 走。
 
 ## 注意事項
 
 - OpenCode 不要用 `system` theme。Herdr 0.1.16 回報給程式的 16 色色盤是預設的深色那一套，`system` 會拿它畫出黑色面板。
 - `ys-*` mod 是內建 mod 的複本，Herdr 更新時不會跟著更新；Herdr 升級後版面壞掉的話，從新版內建 mod 重新複製再套樣式。
 - `ys-tabs` 裡的視窗按鈕圖示是 Windows 用的，其他系統上沒有驗證過。
+- Git 面板開著時，視窗的最小化、最大化、關閉按鈕改由 `ys-git` 的標題列畫，`ys-tabs` 會把自己那組藏起來。
+- Git 面板 diff 的藍底與紅底是照 Claude Code 的淺色色盲友善主題，寫死在 `ys-git/main.js` 開頭的 `ADD`、`ADD_BG`、`DEL`、`DEL_BG`；換 Claude Code 主題時要手動改。
+- Git 面板 graph 的線條顏色抄自 `ys-spaces/main.js` 的 `MARK`，改其中一邊時另一邊要一起改。
+- `ys-git` 借用內建 mod `workspace-chrome`、`changes`、`pane` 的圖示，Herdr 升級後若圖示消失，先檢查這三個內建 mod 的檔名有沒有變。
 
 ## 重新合併字型
 
@@ -54,4 +78,4 @@ Medium 與 Bold 各跑一次，把最後一個參數與輸入的 Roboto Mono 檔
 ## 授權
 
 - Roboto Mono 採 Apache License 2.0，jf open 粉圓採 SIL Open Font License 1.1。
-- `herdr-app/mods/` 內的程式碼改自 Herdr 內建的 mod，原始版權屬於 Herdr。
+- `herdr-app/mods/` 內除了 `ys-git` 以外的程式碼改自 Herdr 內建的 mod，原始版權屬於 Herdr；`ys-git` 的 diff 讀取與顯示參考了內建的 `changes` mod。

@@ -1,12 +1,15 @@
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, layout, window, run, props, checking } from "herdr";
+import { v_flex, h_flex, Scrollbar, v_virtual_list, InputState, Input } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, layout, window, run, props, checking, shared, setShared, notify } from "herdr";
 
 // Read-only git viewer with two tabs. Tree: every branch as a graph; picking a
 // commit opens its files and diff underneath. Changes: the uncommitted files
 // and their diff. It never writes to the repo.
 
 const ROW = 26, LANE = 14, MAX_LANES = 12, LIMIT = 1500, DIFF_ROW = 20;
+// A commit row, left to right: 3px edge, the graph, a gap, then the short hash in a box this wide.
+const EDGE = 3, GAP = 6, HASH_W = 56;
+const graphWidth = (c) => 16 + (c.width - 1) * LANE;
 const WT = "WORKTREE";
 // Diff colours as Claude Code's light colourblind-friendly theme draws them: added blue, removed red.
 const ADD = "#24578a", ADD_BG = "#dbedff", DEL = "#a3211a", DEL_BG = "#ffdcdc";
@@ -152,10 +155,14 @@ export default class Git extends View {
   init(_props, cx) {
     this.commits = []; this.lanes = 1; this.root = null; this.width = 560;
     this.wt = blank(); this.picked = blank(); this.sel = null; this.body = []; this.token = 0;
-    this.tab = "tree";
-    try { if (localStorage.getItem("tab") === "changes") this.tab = "changes"; } catch {}
     // The space this panel stays on; null follows whatever is focused.
     this.pin = null; this.menu = false;
+    // Tree search: narrows the list to commits whose hash, subject, author or ref name matches.
+    this.query = ""; this.handle = cx.focus_handle();
+    this.search = InputState.new({ placeholder: "Search hash, message, author, branch" });
+    this.search.on("change", (_e, cx) => { this.query = this.search.value(); cx.notify(); });
+    this.search.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.search.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     try { this.pin = localStorage.getItem("space") || null; } catch {}
     if (checking()) return;
     this.refresh(cx);
@@ -193,9 +200,13 @@ export default class Git extends View {
       .children(spaces().map((s) => row(s.id, s.name, [s.machine, s.branch].filter(Boolean).join(" · "))));
   }
 
+  // Shared, so the tab bar's keys can pick the tab while this column is hidden.
+  get tab() {
+    return shared("ys-git.tab") === "changes" ? "changes" : "tree";
+  }
+
   setTab(tab, cx) {
-    this.tab = tab;
-    try { localStorage.setItem("tab", tab); } catch {}
+    setShared("ys-git.tab", tab);
     cx.notify();
   }
 
@@ -318,6 +329,24 @@ export default class Git extends View {
     view.diffWidth = Math.max(300, ...view.rows.map((row) => (row.text.length + 1) * 7 + 50));
   }
 
+  // Rows in a virtual list take no handlers of their own, so the list reports only which row.
+  // The press before it (on the box around the list) says where: on the hash copies it,
+  // anywhere else opens the commit.
+  clickCommit(hash, cx) {
+    const c = this.commits.find((x) => x.hash === hash), x = this.pressX;
+    this.pressX = null;
+    if (c && hash !== WT && typeof x === "number") {
+      const from = EDGE + (this.query.trim() ? 16 : graphWidth(c)) + GAP;
+      if (x >= from - 2 && x <= from + HASH_W) {
+        const short = hash.slice(0, 7);
+        cx.write_to_clipboard(short);
+        notify({ title: `Copied ${short}`, timeout: 1500 });
+        return;
+      }
+    }
+    this.pickCommit(hash, cx);
+  }
+
   pickCommit(hash, cx) {
     // The uncommitted row belongs to the other tab.
     if (hash === WT) { this.setTab("changes", cx); return; }
@@ -371,6 +400,7 @@ export default class Git extends View {
     return h_flex().id(`commit-${c.hash}`).w_full().h(ROW).flex_none().gap(6).pr(12).items_center().cursor_pointer()
       .border_l(3).border_color(on ? t.accent : "#00000000").when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
       .child(this.graph(c, t, palette, width))
+      .child(div().flex_none().w(HASH_W).text_size(11).font_family(settings().font_family ?? "JetBrains Mono").text_color(t.muted).child(c.hash === WT ? "" : c.hash.slice(0, 7)))
       .children(c.refs.slice(0, 2).map((r) => this.badge(r, t)))
       .when(extra > 0, (e) => e.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${extra}`)))
       .child(div().flex_1().min_w(0).truncate().text_color(c.hash === WT ? t.working : t.foreground).child(c.subject || "(no message)"))
@@ -468,15 +498,27 @@ export default class Git extends View {
     const palette = ["#22a99a", "#e3814f", "#5b8def", "#8b7cf6", "#3fae6a", "#d9649a"];
     const empty = this.error || (this.loading ? "Loading…" : this.root ? "No commits yet" : "No folder");
     const c = this.sel ? this.commits.find((x) => x.hash === this.sel) : null;
+    const q = this.query.trim().toLowerCase(), has = (s) => (s ?? "").toLowerCase().includes(q);
+    // While searching, rows are matches only, so the lines between them are left out.
+    const list = q ? this.commits.filter((x) => x.hash !== WT && (x.hash.startsWith(q) || has(x.subject) || has(x.author) || x.refs.some((r) => has(r.name)))) : this.commits;
+    const stop = (_e, cx) => cx.stop_propagation();
     return v_flex().flex_1().min_h(0)
-      .child(div().flex_1().min_h(0).relative()
-        .child(div().absolute().inset_0().child(v_virtual_list("git-log", this.commits.length, ROW, (i) => this.commits[i]?.hash ?? String(i),
-          (range) => this.commits.slice(range.start, range.end).map((x) => {
-            try { return this.commitRow(x, t, palette, 16 + (x.width - 1) * LANE); }
+      .child(h_flex().h(36).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border).bg(t.chrome)
+        .child(svg("mods/workspace-chrome/search.svg").size(13).flex_none().text_color(t.dim))
+        .child(div().id("git-search").flex_1().min_w(0).h(24).px(8).flex().items_center().bg(t.raised).border_1().border_color(this.typing ? t.accent : t.border).cursor_text()
+          .on_mouse_down("left", stop).child(Input.new(this.search).h_full().text_size(12).text_color(t.foreground)))
+        .when(Boolean(q), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${list.length} found`))
+          .child(div().id("git-search-clear").size(20).flex_none().flex().items_center().justify_center().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_mouse_down("left", stop).on_click((_e, cx) => { this.search.set_value(""); this.query = ""; cx.notify(); }).child(svg("mods/pane/close.svg").size(12)))))
+      .child(div().id("git-log-box").flex_1().min_h(0).relative()
+        .on_mouse_down("left", (e) => { const x = e?.local_position?.x; this.pressX = typeof x === "number" ? x : null; })
+        .child(div().absolute().inset_0().child(v_virtual_list("git-log", list.length, ROW, (i) => list[i]?.hash ?? String(i),
+          (range) => list.slice(range.start, range.end).map((x) => {
+            try { return q ? this.commitRow({ ...x, segs: [], col: 0 }, t, palette, 16) : this.commitRow(x, t, palette, graphWidth(x)); }
             catch (e) { return div().h(ROW).px(12).truncate().text_color(t.ansi1).child(String(e)); }
-          })).on_item_click((hash, cx) => this.pickCommit(hash, cx)).size_full()))
+          })).on_item_click((hash, cx) => this.clickCommit(hash, cx)).size_full()))
         .child(Scrollbar.vertical("git-log").viewport_from_layout().absolute().inset_0())
-        .when(!this.commits.length, (e) => e.child(div().absolute().top(10).px(14).text_color(t.dim).child(empty))))
+        .when(!list.length, (e) => e.child(div().absolute().top(10).px(14).text_color(t.dim).child(q ? "No commit matches" : empty))))
       .when(Boolean(this.limited), (e) => e.child(div().flex_none().px(12).py(3).text_size(11).text_color(t.dim).border_t(1).border_color(t.border).child(`Showing the newest ${LIMIT} commits`)))
       // Only once a commit is picked: who and what, its files, and one file's diff.
       .when(Boolean(c), (e) => e.child(v_flex().flex_1().min_h(0).border_t(1).border_color(t.border)
@@ -500,6 +542,12 @@ export default class Git extends View {
     if (!this.hidden() && !this.loading && (this.key() !== this.context || this.stale)) this.refresh(cx);
     return v_flex().id("ys-git").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(12.8)
       .on_size_change((size, cx) => { if (Math.abs(size.width - this.width) > 1) { this.width = size.width; cx.notify(); } })
+      // A click gives the panel the keyboard, so Ctrl+F reaches it: search the tree. Escape clears.
+      .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
+      .on_key_down((e, cx) => {
+        if (e.key === "f" && e.modifiers?.control) { if (this.tab !== "tree") this.setTab("tree", cx); this.search.focus(); cx.stop_propagation(); }
+        else if (e.key === "escape" && (this.typing || this.query)) { this.search.set_value(""); this.query = ""; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+      })
       .child(this.header(t))
       .when(this.menu, (e) => e.child(this.spaceMenu(t)))
       .child(this.tab === "changes" ? this.changes(t) : this.tree(t));

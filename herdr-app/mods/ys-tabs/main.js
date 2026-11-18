@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -28,7 +28,22 @@ function label(tab, lead) {
 }
 
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
+    // Keys for the git column land here, because this bar is always shown and a
+    // hidden ys-git gets no commands: "ys-tabs.git-tree" / "ys-tabs.git-changes".
+    // The same key again closes the column.
+    if (!checking()) cx.spawn(async () => {
+      for (;;) {
+        const command = await nextCommand();
+        const want = command === "git-tree" ? "tree" : command === "git-changes" ? "changes" : null;
+        if (!want) continue;
+        const git = find(layout(), "git");
+        if (!git) continue;
+        const now = shared("ys-git.tab") === "changes" ? "changes" : "tree";
+        if (!git.hidden && now === want) run("layout.hide", { id: "git" });
+        else { setShared("ys-git.tab", want); run("layout.show", { id: "git" }); }
+      }
+    });
     this.pressed = null;
     this.scroll = ScrollHandle.new();
     try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
