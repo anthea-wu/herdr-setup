@@ -48,9 +48,9 @@ Git 面板需要 `git` 在 PATH 上，否則只會顯示讀不到 repo。
 
 `ys-git` 掛在 `layouts/yuansui.json` 最外層的 `git` 節點，只跑唯讀的 git 指令，不會改動 repo。
 
-- 開關：tab bar 右邊的 Git 按鈕，或 `Alt+9`（Tree）、`Alt+0`（Changes）；面板開著又按同一個鍵會收合。快捷鍵由 `ys-tabs` 接收再轉給面板，因為收合中的 mod 收不到命令。
+- 開關：tab bar 右邊的 Git 按鈕，或 `Alt+9`（Tree）、`Alt+0`（Changes）。面板沒開時，快捷鍵會打開並把鍵盤 focus 交給面板；開著但 focus 在別處時只把 focus 拿過來；focus 已在面板且就是那個 tab 時才收合，focus 回到原本的 pane。快捷鍵由 `ys-tabs` 接收，因為收合中的 mod 收不到命令；面板開著時再轉給 `ys-git` 判斷。
 - Tree：所有 branch 的 commit graph。點短 hash 複製到剪貼簿，點其他位置在下方展開該 commit 的檔案與 diff，最上面那列 uncommitted 會跳到 Changes。
-- Tree 上方的搜尋框會把清單縮到 hash、訊息第一行、作者或 branch 名稱符合的 commit，搜尋中不畫 graph 的線。點過面板後按 `Ctrl+F` 跳到搜尋框，`Esc` 清除。
+- Tree 上方的搜尋框會把清單縮到 hash、訊息第一行、作者或 branch 名稱符合的 commit，搜尋中不畫 graph 的線。面板有 focus 時按 `Ctrl+F` 跳到搜尋框，`Esc` 清除。每次改搜尋文字，結果會捲回第一筆；結束搜尋時，選取中的 commit 會捲到清單正中間。
 - Changes：還沒 commit 的檔案與 diff。
 - 標題列的「repo · branch」可以選一個 space 固定顯示，選 Follow focus 則跟著目前的 pane 走。這個選擇存在各台電腦自己的儲存區，不會跟著 repo 走。
 

@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, layout, window, run, props, checking, shared, setShared, notify } from "herdr";
+import { v_flex, h_flex, Scrollbar, v_virtual_list, InputState, Input, VirtualListScrollHandle } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, layout, window, run, props, checking, shared, setShared, notify, nextCommand } from "herdr";
 
 // Read-only git viewer with two tabs. Tree: every branch as a graph; picking a
 // commit opens its files and diff underneath. Changes: the uncommitted files
@@ -160,17 +160,46 @@ export default class Git extends View {
     // Tree search: narrows the list to commits whose hash, subject, author or ref name matches.
     this.query = ""; this.handle = cx.focus_handle();
     this.search = InputState.new({ placeholder: "Search hash, message, author, branch" });
-    this.search.on("change", (_e, cx) => { this.query = this.search.value(); cx.notify(); });
+    this.logScroll = VirtualListScrollHandle.new();
+    // Leaving a search puts the picked commit in the middle of the full list (see tree()).
+    this.search.on("change", (_e, cx) => {
+      const was = this.query.trim();
+      this.query = this.search.value();
+      if (was && !this.query.trim()) this.center = true;
+      // Every new search starts from its first match.
+      if (this.query.trim() && this.query.trim() !== was) this.top = true;
+      cx.notify();
+    });
     this.search.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.search.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     try { this.pin = localStorage.getItem("space") || null; } catch {}
     if (checking()) return;
     this.refresh(cx);
     cx.timer.every(15000, (cx) => { if (!this.hidden()) this.refresh(cx); });
+    // From the tab bar's git keys: "focus" after opening, "key-tree" / "key-changes" while shown.
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "focus") { this.handle.focus(); cx.notify(); continue; }
+        const want = command === "key-tree" ? "tree" : command === "key-changes" ? "changes" : null;
+        if (!want) continue;
+        // The key for the tab already shown, pressed while this column has the keyboard, closes it.
+        if ((this.handle.is_focused() || this.typing) && this.tab === want) {
+          run("layout.hide", { id: props()?.node ?? "git" });
+          const pane = focused()?.pane;
+          if (pane) run("pane.focus", { pane });
+        } else { this.setTab(want, cx); this.handle.focus(); }
+      }
+    });
   }
 
   hidden() {
     return Boolean(find(layout(), props()?.node ?? "git")?.hidden);
+  }
+
+  clearSearch() {
+    if (this.query.trim()) this.center = true;
+    this.search.set_value(""); this.query = "";
   }
 
   key() {
@@ -454,7 +483,7 @@ export default class Git extends View {
         .child(div().min_w(0).truncate().child([repo, head].filter(Boolean).join(" · ") || "No repository"))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none()))
       .when(Boolean(this.loading), (e) => e.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)))
-      .child(button("git-hide", svg("mods/workspace-chrome/panel-right.svg").size(15), () => run("layout.hide", { id: props()?.node ?? "git" })))
+      .child(button("git-hide", svg("mods/workspace-chrome/panel-right.svg").size(15), () => { run("layout.hide", { id: props()?.node ?? "git" }); const pane = focused()?.pane; if (pane) run("pane.focus", { pane }); }))
       .when(Boolean(w?.buttons), (e) => e
         .child(button("git-minimize", w.platform === "windows" ? svg("mods/ys-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("git-maximize", w.platform === "windows" ? svg(`mods/ys-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
@@ -502,6 +531,15 @@ export default class Git extends View {
     // While searching, rows are matches only, so the lines between them are left out.
     const list = q ? this.commits.filter((x) => x.hash !== WT && (x.hash.startsWith(q) || has(x.subject) || has(x.author) || x.refs.some((r) => has(r.name)))) : this.commits;
     const stop = (_e, cx) => cx.stop_propagation();
+    if (q && this.top) {
+      this.top = false;
+      if (list.length) this.logScroll.scroll_to_item(0, "top");
+    }
+    if (!q && this.center) {
+      this.center = false;
+      const at = this.sel ? this.commits.findIndex((x) => x.hash === this.sel) : -1;
+      if (at >= 0) this.logScroll.scroll_to_item(at, "center");
+    }
     return v_flex().flex_1().min_h(0)
       .child(h_flex().h(36).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border).bg(t.chrome)
         .child(svg("mods/workspace-chrome/search.svg").size(13).flex_none().text_color(t.dim))
@@ -509,14 +547,14 @@ export default class Git extends View {
           .on_mouse_down("left", stop).child(Input.new(this.search).h_full().text_size(12).text_color(t.foreground)))
         .when(Boolean(q), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${list.length} found`))
           .child(div().id("git-search-clear").size(20).flex_none().flex().items_center().justify_center().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
-            .on_mouse_down("left", stop).on_click((_e, cx) => { this.search.set_value(""); this.query = ""; cx.notify(); }).child(svg("mods/pane/close.svg").size(12)))))
+            .on_mouse_down("left", stop).on_click((_e, cx) => { this.clearSearch(); cx.notify(); }).child(svg("mods/pane/close.svg").size(12)))))
       .child(div().id("git-log-box").flex_1().min_h(0).relative()
         .on_mouse_down("left", (e) => { const x = e?.local_position?.x; this.pressX = typeof x === "number" ? x : null; })
         .child(div().absolute().inset_0().child(v_virtual_list("git-log", list.length, ROW, (i) => list[i]?.hash ?? String(i),
           (range) => list.slice(range.start, range.end).map((x) => {
             try { return q ? this.commitRow({ ...x, segs: [], col: 0 }, t, palette, 16) : this.commitRow(x, t, palette, graphWidth(x)); }
             catch (e) { return div().h(ROW).px(12).truncate().text_color(t.ansi1).child(String(e)); }
-          })).on_item_click((hash, cx) => this.clickCommit(hash, cx)).size_full()))
+          })).on_item_click((hash, cx) => this.clickCommit(hash, cx)).track_scroll(this.logScroll).size_full()))
         .child(Scrollbar.vertical("git-log").viewport_from_layout().absolute().inset_0())
         .when(!list.length, (e) => e.child(div().absolute().top(10).px(14).text_color(t.dim).child(q ? "No commit matches" : empty))))
       .when(Boolean(this.limited), (e) => e.child(div().flex_none().px(12).py(3).text_size(11).text_color(t.dim).border_t(1).border_color(t.border).child(`Showing the newest ${LIMIT} commits`)))
@@ -546,7 +584,7 @@ export default class Git extends View {
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => {
         if (e.key === "f" && e.modifiers?.control) { if (this.tab !== "tree") this.setTab("tree", cx); this.search.focus(); cx.stop_propagation(); }
-        else if (e.key === "escape" && (this.typing || this.query)) { this.search.set_value(""); this.query = ""; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+        else if (e.key === "escape" && (this.typing || this.query)) { this.clearSearch(); this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
       .child(this.header(t))
       .when(this.menu, (e) => e.child(this.spaceMenu(t)))

@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, checking } from "herdr";
+import { spaces, panes, focused, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -31,17 +31,22 @@ export default class Tabs extends View {
   init(_props, cx) {
     // Keys for the git column land here, because this bar is always shown and a
     // hidden ys-git gets no commands: "ys-tabs.git-tree" / "ys-tabs.git-changes".
-    // The same key again closes the column.
-    if (!checking()) cx.spawn(async () => {
+    // Hidden: open on that tab with the keyboard. Shown without the keyboard: take it.
+    // Shown with the keyboard on that tab: close.
+    if (!checking()) cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
         const want = command === "git-tree" ? "tree" : command === "git-changes" ? "changes" : null;
         if (!want) continue;
         const git = find(layout(), "git");
         if (!git) continue;
-        const now = shared("ys-git.tab") === "changes" ? "changes" : "tree";
-        if (!git.hidden && now === want) run("layout.hide", { id: "git" });
-        else { setShared("ys-git.tab", want); run("layout.show", { id: "git" }); }
+        // Shown already: the column decides, since only it knows whether it has the keyboard.
+        if (!git.hidden) { run(`ys-git.key-${want}`); continue; }
+        setShared("ys-git.tab", want); run("layout.show", { id: "git" });
+        // The column takes the keyboard, so Ctrl+F works at once. A hidden mod gets no
+        // commands, so ask again once it has had time to show.
+        run("ys-git.focus");
+        cx.timer.after(120, () => run("ys-git.focus"));
       }
     });
     this.pressed = null;
