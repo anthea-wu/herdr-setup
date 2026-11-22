@@ -44,6 +44,19 @@ Herdr 桌面版（`herdr-app`）與 OpenCode 的「有隻芫荽」樣式備份�
 
 Git 面板需要 `git` 在 PATH 上，否則只會顯示讀不到 repo。
 
+## macOS
+
+上面的步驟是照 Windows 寫的，在 macOS 上有這些不同：
+
+- 切換版面是 `Cmd+Shift+L`，不是 `Ctrl+Shift+L`。
+- macOS 不裝 Git 面板：
+  1. 第 1 步不要複製 `mods/ys-git`。
+  2. 把 `~/.config/herdr-app/layouts/yuansui.json` 最外層 `id` 為 `git` 的節點整段刪掉。
+  3. 跳過第 5 步，不加 `alt-9`、`alt-0`。
+
+  `ys-tabs` 找不到 `git` 節點時，會自己藏起 Git 按鈕，快捷鍵也會直接跳過，其他 mod 不受影響。
+- 重開 Herdr 後字型沒有變的話，把 `fonts/` 裡的三個 `.ttf` 用「字體簿」安裝。
+
 ## Git 面板
 
 `ys-git` 掛在 `layouts/yuansui.json` 最外層的 `git` 節點，只跑唯讀的 git 指令，不會改動 repo。
